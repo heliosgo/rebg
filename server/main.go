@@ -22,7 +22,12 @@ type Server struct {
 	Conn      chan net.Conn
 }
 
-func NewServer(conf Config) *Server {
+func NewServer(file string) (*Server, error) {
+	conf, err := NewConfig(file)
+	if err != nil {
+		return nil, err
+	}
+
 	res := &Server{
 		Conf:      conf,
 		Sub:       make(map[string]SubServer),
@@ -33,7 +38,7 @@ func NewServer(conf Config) *Server {
 		Conn:      make(chan net.Conn),
 	}
 
-	return res
+	return res, nil
 }
 
 // wait client
@@ -44,12 +49,16 @@ func (s *Server) Start() error {
 	}
 	s.Listener = listener
 	go s.accept()
+	log.Printf("server is started\n")
 	for {
 		select {
 		case conn := <-s.Conn:
 			go s.process(conn)
 		case key := <-s.Notify:
-			s.notifyConn(key)
+			err := s.notifyConn(key)
+			if err != nil {
+				log.Printf("notify failed, key: %s, err: %v\n", key, err)
+			}
 		}
 	}
 }
@@ -78,21 +87,30 @@ func (s *Server) process(conn net.Conn) {
 func (s *Server) handleMessage(conn net.Conn, msg api.Message) error {
 	switch msg.Type {
 	case api.MessageTypeRegister:
-		return s.handleRegisterMessage(conn, msg.Data.(api.MessageRegister))
+		return s.handleRegisterMessage(conn, msg.Data)
 	}
 
 	return errorx.ErrUnknownMessageType
 }
 
-func (s *Server) handleRegisterMessage(conn net.Conn, data api.MessageRegister) error {
+func (s *Server) handleRegisterMessage(conn net.Conn, src any) error {
+	var data api.MessageRegister
+	srcByte, err := json.Marshal(src)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(srcByte, &data); err != nil {
+		return err
+	}
 	s.Mutex.Lock()
 	defer s.Mutex.Unlock()
+	fmt.Println(data.M)
 	for k, v := range data.M {
 		if _, ok := s.Sub[k]; ok {
 			log.Printf("%s is registered, detail: %+v\n", k, v)
 			continue
 		}
-		subServer, err := s.newSubServer(v)
+		subServer, err := s.newSubServer(conn.RemoteAddr().String(), v)
 		if err != nil {
 			log.Printf("cannot build new sub server, key: %s, detail: %+v\n", k, v)
 			continue
@@ -102,30 +120,45 @@ func (s *Server) handleRegisterMessage(conn net.Conn, data api.MessageRegister) 
 		go subServer.Run()
 	}
 
+	resp := api.Message{
+		Type: api.MessageTypeRegister,
+		Data: api.MessageDataOK,
+	}
+	respByte, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	conn.Write(respByte)
+
 	return nil
 }
 
-func (s *Server) newSubServer(item api.MessageRegisterItem) (SubServer, error) {
+func (s *Server) newSubServer(clientAddr string, item api.MessageRegisterItem) (SubServer, error) {
 	switch item.Type {
 	case api.ProtocolTypeTCP:
-		return NewTCPServer(item.RemotePort, s.Notify, s.Stop)
+		return NewTCPServer(clientAddr, item, s.Notify, s.Stop)
+	case api.ProtocolTypeHTTP:
+		return NewHTTPServer(clientAddr, item, s.Notify, s.Stop)
+	case api.ProtocolTypeUDP:
+		return NewUDPServer(clientAddr, item , s.Notify, s.Stop)
 	}
 
 	return nil, errorx.ErrUnknownProtocolType
 }
 
 func (s *Server) read(conn net.Conn) {
+	defer conn.Close()
 	for {
 		msgByte := make([]byte, 1024)
 		n, err := conn.Read(msgByte)
 		if err != nil {
 			log.Printf("read from client failed, err: %v\n", err)
-			continue
+			return
 		}
 		var msg api.Message
 		if err := json.Unmarshal(msgByte[:n], &msg); err != nil {
 			log.Printf("json unmarshal failed, err: %v\n", err)
-			continue
+			return
 		}
 
 		s.Read <- msg
@@ -139,8 +172,11 @@ func (s *Server) notifyConn(key string) error {
 	if !ok {
 		return errorx.ErrNotFoundConn
 	}
-	msg := api.MessageConnect{
-		LocalKey: key,
+	msg := api.Message{
+		Type: api.MessageTypeConnect,
+		Data: api.MessageConnect{
+			LocalKey: key,
+		},
 	}
 	msgByte, err := json.Marshal(msg)
 	if err != nil {

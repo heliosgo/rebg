@@ -1,6 +1,10 @@
 package client
 
-import "github.com/BurntSushi/toml"
+import (
+	"rebg/api"
+
+	"github.com/BurntSushi/toml"
+)
 
 type Config struct {
 	Core  Core
@@ -8,15 +12,15 @@ type Config struct {
 }
 
 type Core struct {
-	RemoteHost string
-	RemotePort int
+	RemoteHost string `toml:"remote_host"`
+	RemotePort int    `toml:"remote_port"`
 }
 
 type Item struct {
-	Type       string
-	LocalHost  string
-	LocalPort  int
-	RemotePort int
+	Type       api.ProtocolType `toml:"type"`
+	LocalHost  string           `toml:"local_host"`
+	LocalPort  int              `toml:"local_port"`
+	RemotePort int              `toml:"remote_port"`
 }
 
 func NewConfig(file string) (Config, error) {

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-type TCPServer struct {
+type HTTPServer struct {
 	Key        string
 	Listener   net.Listener
 	Port       int
@@ -19,18 +19,18 @@ type TCPServer struct {
 	ClientHost string
 }
 
-func NewTCPServer(
+func NewHTTPServer(
 	clientAddr string,
 	item api.MessageRegisterItem,
 	notify chan string,
 	stop chan struct{},
-) (*TCPServer, error) {
+) (*HTTPServer, error) {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", item.RemotePort))
 	if err != nil {
 		return nil, err
 	}
 
-	return &TCPServer{
+	return &HTTPServer{
 		Key:        item.Key,
 		Listener:   listener,
 		Notify:     notify,
@@ -40,7 +40,7 @@ func NewTCPServer(
 	}, nil
 }
 
-func (s *TCPServer) Run() {
+func (s *HTTPServer) Run() {
 	for {
 		conn, err := s.Listener.Accept()
 		if err != nil {
@@ -65,7 +65,7 @@ func (s *TCPServer) Run() {
 	}
 }
 
-func (s *TCPServer) startTunnel(user, client net.Conn) {
+func (s *HTTPServer) startTunnel(user, client net.Conn) {
 	log.Printf(
 		"start tunnel, user: %s, client: %s\n",
 		user.RemoteAddr(), client.RemoteAddr(),
@@ -73,7 +73,7 @@ func (s *TCPServer) startTunnel(user, client net.Conn) {
 	s.joinConnect(user, client)
 }
 
-func (s *TCPServer) joinConnect(user, client net.Conn) {
+func (s *HTTPServer) joinConnect(user, client net.Conn) {
 	defer func() {
 		user.Close()
 		client.Close()
@@ -93,7 +93,7 @@ func (s *TCPServer) joinConnect(user, client net.Conn) {
 		}
 	}
 }
-func (s *TCPServer) read(conn net.Conn, ch chan []byte) {
+func (s *HTTPServer) read(conn net.Conn, ch chan []byte) {
 	defer conn.Close()
 	for {
 		msg := make([]byte, 1024)

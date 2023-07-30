@@ -12,8 +12,14 @@ const (
 
 type ProtocolType string
 
+func (t ProtocolType) String() string {
+	return string(t)
+}
+
 const (
-	ProtocolTypeTCP ProtocolType = "tcp"
+	ProtocolTypeTCP  ProtocolType = "tcp"
+	ProtocolTypeHTTP ProtocolType = "http"
+	ProtocolTypeUDP  ProtocolType = "udp"
 )
 
 type Message struct {

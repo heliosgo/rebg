@@ -1,0 +1,22 @@
+[core]
+remote_host = "192.168.56.21"
+remote_port = 8080
+
+[items.tcp]
+type = "tcp"
+local_host = "192.168.56.22"
+local_port = 8081 
+remote_port = 8082
+
+[items.web]
+type = "http"
+local_host = "192.168.56.22"
+local_port = 8083 
+remote_port = 8084
+
+[items.udp]
+type = "udp"
+local_host = "192.168.56.22"
+local_port = 8085
+remote_port = 8086
+
