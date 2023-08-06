@@ -6,6 +6,7 @@ import (
 	"net"
 	"rebg/api"
 	"strings"
+	"sync"
 )
 
 type UDPServer struct {
@@ -14,9 +15,17 @@ type UDPServer struct {
 	Port       int
 	Stop       chan struct{}
 	Notify     chan string
-	Client     *net.UDPAddr
-	User       *net.UDPAddr
+	Conns      map[string]*UDPConnx
 	ClientHost string
+	Close      chan Close
+	Queue      []*net.UDPAddr
+
+	Mutex sync.RWMutex
+}
+
+type UDPConnx struct {
+	User   *net.UDPAddr
+	Client *net.UDPAddr
 }
 
 func NewUDPServer(
@@ -24,6 +33,7 @@ func NewUDPServer(
 	item api.MessageRegisterItem,
 	notify chan string,
 	stop chan struct{},
+	closeCh chan Close,
 ) (*UDPServer, error) {
 	addr := fmt.Sprintf(":%d", item.RemotePort)
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
@@ -42,6 +52,9 @@ func NewUDPServer(
 		Port:       item.RemotePort,
 		Stop:       stop,
 		ClientHost: strings.Split(clientAddr, ":")[0],
+		Conns:      make(map[string]*UDPConnx),
+		Close:      closeCh,
+		Queue:      make([]*net.UDPAddr, 0),
 	}, nil
 }
 
@@ -54,19 +67,25 @@ func (s *UDPServer) Run() {
 			continue
 		}
 		log.Printf("new conn from %s\n", addr)
-
-		if s.User == nil && addr.IP.String() != s.ClientHost {
+		if addr.IP.String() != s.ClientHost {
 			log.Printf("new conn from user, key: %s\n", s.Key)
-			s.User = addr
+			s.Queue = append(s.Queue, addr)
 			s.Notify <- s.Key
 			continue
 		}
-		if addr.IP.String() == s.ClientHost {
-			s.Client = addr
+		if len(s.Queue) == 0 {
+			continue
 		}
-		if s.User != nil && s.Client != nil {
-			s.startTunnel(s.User, s.Client, buf[:n])
+
+		s.Mutex.Lock()
+		connx := &UDPConnx{
+			User:   s.Queue[0],
+			Client: addr,
 		}
+		s.Conns[addr.AddrPort().String()] = connx
+		s.Mutex.Unlock()
+		s.Queue = s.Queue[1:]
+		go s.startTunnel(connx.User, connx.Client, buf[:n])
 	}
 }
 
@@ -84,8 +103,10 @@ func (s *UDPServer) startTunnel(user, client *net.UDPAddr, firstMsg []byte) {
 
 func (s *UDPServer) joinConnect(user, client *net.UDPAddr) {
 	defer func() {
-		user = nil
-		client = nil
+		s.Close <- Close{Key: s.Key, Addr: client.AddrPort().String()}
+		s.Mutex.Lock()
+		delete(s.Conns, client.AddrPort().String())
+		s.Mutex.Unlock()
 	}()
 	buf := make([]byte, 1024)
 	for {

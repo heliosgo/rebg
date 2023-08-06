@@ -18,8 +18,14 @@ type Server struct {
 	KeyToConn map[string]net.Conn
 	Stop      chan struct{}
 	Notify    chan string
+	Close     chan Close
 	Read      chan api.Message
 	Conn      chan net.Conn
+}
+
+type Close struct {
+	Key  string
+	Addr string
 }
 
 func NewServer(file string) (*Server, error) {
@@ -34,6 +40,7 @@ func NewServer(file string) (*Server, error) {
 		KeyToConn: make(map[string]net.Conn),
 		Stop:      make(chan struct{}),
 		Notify:    make(chan string),
+		Close:     make(chan Close),
 		Read:      make(chan api.Message),
 		Conn:      make(chan net.Conn),
 	}
@@ -58,6 +65,11 @@ func (s *Server) Start() error {
 			err := s.notifyConn(key)
 			if err != nil {
 				log.Printf("notify failed, key: %s, err: %v\n", key, err)
+			}
+		case c := <-s.Close:
+			s.closeConn(c)
+			if err != nil {
+				log.Printf("close failed, c: %v, err: %v\n", c, err)
 			}
 		}
 	}
@@ -104,7 +116,6 @@ func (s *Server) handleRegisterMessage(conn net.Conn, src any) error {
 	}
 	s.Mutex.Lock()
 	defer s.Mutex.Unlock()
-	fmt.Println(data.M)
 	for k, v := range data.M {
 		if _, ok := s.Sub[k]; ok {
 			log.Printf("%s is registered, detail: %+v\n", k, v)
@@ -136,11 +147,11 @@ func (s *Server) handleRegisterMessage(conn net.Conn, src any) error {
 func (s *Server) newSubServer(clientAddr string, item api.MessageRegisterItem) (SubServer, error) {
 	switch item.Type {
 	case api.ProtocolTypeTCP:
-		return NewTCPServer(clientAddr, item, s.Notify, s.Stop)
+		return NewTCPServer(clientAddr, item, s.Notify, s.Stop, s.Close)
 	case api.ProtocolTypeHTTP:
-		return NewHTTPServer(clientAddr, item, s.Notify, s.Stop)
+		return NewHTTPServer(clientAddr, item, s.Notify, s.Stop, s.Close)
 	case api.ProtocolTypeUDP:
-		return NewUDPServer(clientAddr, item , s.Notify, s.Stop)
+		return NewUDPServer(clientAddr, item, s.Notify, s.Stop, s.Close)
 	}
 
 	return nil, errorx.ErrUnknownProtocolType
@@ -172,10 +183,39 @@ func (s *Server) notifyConn(key string) error {
 	if !ok {
 		return errorx.ErrNotFoundConn
 	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+	}
 	msg := api.Message{
 		Type: api.MessageTypeConnect,
 		Data: api.MessageConnect{
 			LocalKey: key,
+		},
+	}
+	msgByte, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	_, err = conn.Write(msgByte)
+
+	return err
+}
+
+func (s *Server) closeConn(c Close) error {
+	s.Mutex.RLock()
+	defer s.Mutex.RUnlock()
+	conn, ok := s.KeyToConn[c.Key]
+	if !ok {
+		return errorx.ErrNotFoundConn
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+	}
+	msg := api.Message{
+		Type: api.MessageTypeClose,
+		Data: api.MessageClose{
+			Addr: c.Addr,
 		},
 	}
 	msgByte, err := json.Marshal(msg)

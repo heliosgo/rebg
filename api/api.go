@@ -6,6 +6,7 @@ const (
 	MessageTypeRegister  MessageType = "register"
 	MessageTypeHeartBeat MessageType = "heart_beat"
 	MessageTypeConnect   MessageType = "connect"
+	MessageTypeClose     MessageType = "close"
 
 	MessageDataOK = "ok"
 )
@@ -39,4 +40,8 @@ type MessageRegisterItem struct {
 
 type MessageConnect struct {
 	LocalKey string `json:"local_key"`
+}
+
+type MessageClose struct {
+	Addr string `json:"addr"`
 }

@@ -7,11 +7,14 @@ import (
 	"net"
 	"rebg/api"
 	"rebg/errorx"
+	"sync"
 )
 
 type Client struct {
 	Conf       Config
 	ServerConn net.Conn
+	LocalConn  map[string]net.Conn
+	Mutex      sync.RWMutex
 }
 
 func NewClient(file string) (*Client, error) {
@@ -20,7 +23,10 @@ func NewClient(file string) (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{Conf: conf}, nil
+	return &Client{
+		Conf:      conf,
+		LocalConn: make(map[string]net.Conn),
+	}, nil
 }
 
 func (c *Client) Start() error {
@@ -94,26 +100,68 @@ func (c *Client) waitConnect() error {
 		if err != nil {
 			return err
 		}
-		var msg api.Message
-		err = json.Unmarshal(msgByte[:n], &msg)
-		if err != nil {
-			return err
+		preHandleMsg := c.preHandleMessage(msgByte[:n])
+		for _, v := range preHandleMsg {
+			var msg api.Message
+			err = json.Unmarshal(v, &msg)
+			if err != nil {
+				return err
+			}
+			log.Printf("new msg comming, msg: %v\n", msg)
+			go func() {
+				if err := c.handleMessage(msg); err != nil {
+					log.Printf("handle message failed, err: %v\n", err)
+				}
+			}()
 		}
-		log.Printf("new conn comming, msg: %v\n", msg)
-		dataByte, err := json.Marshal(msg.Data)
-		if err != nil {
-			return err
+	}
+}
+
+func (c *Client) preHandleMessage(msg []byte) [][]byte {
+	res := make([][]byte, 0)
+	stack := make([]int, 0)
+	for i, v := range msg {
+		switch v {
+		case '{':
+			stack = append(stack, i)
+		case '}':
+			l := len(stack)
+			if l == 0 {
+				continue
+			}
+			if msg[stack[l-1]] == '{' {
+				if l == 1 {
+					res = append(res, msg[stack[l-1]:i+1])
+				}
+				stack = stack[:l-1]
+			}
 		}
+	}
+
+	return res
+}
+
+func (c *Client) handleMessage(msg api.Message) error {
+	dataByte, err := json.Marshal(msg.Data)
+	if err != nil {
+		return err
+	}
+	switch msg.Type {
+	case api.MessageTypeConnect:
 		var data api.MessageConnect
 		if err := json.Unmarshal(dataByte, &data); err != nil {
 			return err
 		}
-		go func() {
-			if err := c.handleConnect(data); err != nil {
-				fmt.Println(err)
-			}
-		}()
+		c.handleConnect(data)
+	case api.MessageTypeClose:
+		var data api.MessageClose
+		if err := json.Unmarshal(dataByte, &data); err != nil {
+			return err
+		}
+		c.handleClose(data)
 	}
+
+	return nil
 }
 
 func (c *Client) handleConnect(data api.MessageConnect) error {
@@ -133,6 +181,15 @@ func (c *Client) handleConnect(data api.MessageConnect) error {
 	return nil
 }
 
+func (c *Client) handleClose(data api.MessageClose) error {
+	c.Mutex.Lock()
+	c.LocalConn[data.Addr].Close()
+	delete(c.LocalConn, data.Addr)
+	c.Mutex.Unlock()
+
+	return nil
+}
+
 func (c *Client) handleTCPConnect(localAddr, remoteAddr string) error {
 	localConn, err := net.Dial("tcp", localAddr)
 	if err != nil {
@@ -146,6 +203,10 @@ func (c *Client) handleTCPConnect(localAddr, remoteAddr string) error {
 	log.Printf("connect remote success, addr: %s\n", remoteAddr)
 
 	go c.joinConnect(localConn, remoteConn)
+
+	c.Mutex.Lock()
+	c.LocalConn[remoteConn.LocalAddr().String()] = localConn
+	c.Mutex.Unlock()
 
 	return nil
 }
@@ -174,6 +235,9 @@ func (c *Client) handleUDPConnect(localAddr, remoteAddr string) error {
 	lread, rread := make(chan []byte), make(chan []byte)
 	go c.readFromUDP(lconn, lread)
 	go c.readFromUDP(rconn, rread)
+	c.Mutex.Lock()
+	c.LocalConn[rconn.LocalAddr().String()] = lconn
+	c.Mutex.Unlock()
 	for {
 		select {
 		case msg := <-lread:
